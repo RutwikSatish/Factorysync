@@ -297,11 +297,17 @@ elif module == "📦 MRP Engine":
                 "Lead Time (days)": row["Lead Time (days)"],
                 "Order By":         order_date.strftime("%Y-%m-%d"),
                 "Due Date":         str(due_date),
-                # FIX: compare pd.Timestamp to pd.Timestamp (not datetime)
                 "Status":           "On Track" if order_date > pd.Timestamp.today() else "⚠️ Past Due"
             })
 
-        schedule_df = pd.DataFrame(schedule)
+        st.session_state["schedule_df"] = pd.DataFrame(schedule)
+        st.session_state["due_date_used"] = str(due_date)
+        st.session_state["demand_qty_used"] = demand_qty
+
+    if "schedule_df" in st.session_state:
+        schedule_df = st.session_state["schedule_df"]
+        due_date = st.session_state["due_date_used"]
+        demand_qty = st.session_state["demand_qty_used"]
 
         def highlight_status(val):
             if "Past Due" in str(val):

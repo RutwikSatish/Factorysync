@@ -146,7 +146,7 @@ elif module == "📦 MRP Engine":
             return "background-color: #eaf3de; color: #3b6d11"
 
         st.dataframe(
-            schedule_df.style.applymap(highlight_status, subset=["Status"]),
+            schedule_df.style.map(highlight_status, subset=["Status"]),
             use_container_width=True
         )
 

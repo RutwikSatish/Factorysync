@@ -330,6 +330,98 @@ elif module == "📦 MRP Engine":
             "Planned Delivery Time (SAP MM02). Status flags replicate SAP MRP exception messages."
         )
 
+        # ── GROQ AI INSIGHTS ─────────────────────────────────
+        st.markdown("---")
+        st.subheader("🤖 AI Planning Analyst")
+        st.markdown(
+            "Generate an AI-powered planning brief based on your MRP schedule. "
+            "The analyst diagnoses the critical path, identifies the highest-risk "
+            "components, and recommends specific actions for the planning team."
+        )
+
+        _default_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+        groq_key = _default_key or st.text_input(
+            "Groq API Key",
+            type="password",
+            placeholder="gsk_... — free key at console.groq.com",
+            help="Used only for this session. Never stored."
+        )
+
+        if st.button("Generate AI Planning Brief", type="primary"):
+            if not groq_key:
+                st.warning("Enter a Groq API key to generate the AI brief.")
+            else:
+                past_due_list = schedule_df[
+                    schedule_df["Status"].str.contains("Past Due")
+                ][["Component","Parent","Qty Needed","Lead Time (days)","Order By"]].to_dict(orient="records")
+
+                on_track_list = schedule_df[
+                    ~schedule_df["Status"].str.contains("Past Due")
+                ][["Component","Lead Time (days)","Order By"]].to_dict(orient="records")
+
+                worst_str = "None — all components on track"
+                if past_due_list:
+                    worst = max(past_due_list, key=lambda x: x["Lead Time (days)"])
+                    worst_str = (f"{worst['Component']} (lead time: {worst['Lead Time (days)']} days, "
+                                 f"should have been ordered by {worst['Order By']})")
+
+                prompt = f"""You are a senior supply chain planning analyst.
+A planner has run an MRP schedule for an EV battery pack assembly.
+Due date: {due_date}. Demand: {demand_qty} units.
+
+PAST DUE COMPONENTS ({len(past_due_list)} of {len(schedule_df)} total):
+{past_due_list}
+
+ON TRACK COMPONENTS:
+{on_track_list}
+
+MOST CRITICAL ITEM: {worst_str}
+
+Write a concise planning brief (under 200 words) for the production planning team. Use this structure:
+
+SITUATION: What is the current planning status?
+CRITICAL PATH: Which component is most urgent and why?
+IMMEDIATE ACTIONS: Three specific actions the planning team should take today, in priority order.
+RISK IF NO ACTION: What happens if nothing is done?
+
+Be direct and specific. Use supply chain planning language. Plain text only, no markdown."""
+
+                with st.spinner("Analysing your MRP schedule..."):
+                    try:
+                        from groq import Groq
+                        client  = Groq(api_key=groq_key)
+                        resp    = client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            max_tokens=400,
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        brief = resp.choices[0].message.content.strip()
+
+                        st.markdown(
+                            f'<div style="background:#0d1f0d;border:1px solid #1a4a1a;'
+                            f'border-left:4px solid #10b981;border-radius:10px;'
+                            f'padding:20px 24px;font-size:14px;line-height:1.8;'
+                            f'color:#d1fae5;white-space:pre-wrap;">{brief}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        ai1, ai2, ai3 = st.columns(3)
+                        ai1.metric("Past Due", f"{len(past_due_list)} / {len(schedule_df)}",
+                                   delta="Action required" if past_due_list else "All clear",
+                                   delta_color="inverse" if past_due_list else "normal")
+                        if past_due_list:
+                            ai2.metric("Longest Lead Time (Past Due)",
+                                       f"{max(x['Lead Time (days)'] for x in past_due_list)} days",
+                                       delta="Most critical", delta_color="inverse")
+                            ai3.metric("Units at Risk",
+                                       f"{sum(x['Qty Needed'] for x in past_due_list):,}",
+                                       delta="Cannot deliver on time", delta_color="inverse")
+
+                    except Exception as e:
+                        st.error(f"Groq API error: {e}")
+                        st.info("Check your API key at console.groq.com — it's free.")
+
 
 # ============================================================
 # MODULE 2: PPAP TRACKER

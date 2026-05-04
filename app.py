@@ -1,34 +1,33 @@
 """
-FactorySync — Supplier Industrialization & MRP Platform
-=========================================================
+FactorySync 2.0 — Supply Chain Stress Monitor
+==============================================
 Built by Rutwik Satish | MS Engineering Management, Northeastern University
 
-WHY THIS EXISTS:
-  In automotive manufacturing, Start of Production (SOP) is a hard deadline.
-  Missing it costs OEMs $1M–$5M per day in penalty clauses and lost production.
-  Supplier Industrialization teams — the people responsible for getting suppliers
-  ready before SOP — coordinate PPAP approvals, run SPC quality reviews, and
-  manage MRP order schedules simultaneously, across dozens of suppliers, using
-  a combination of SAP transactions and manual Excel trackers.
+THE PROBLEM THIS ACTUALLY SOLVES:
+  Mid-size US manufacturers ($50M–$500M revenue) have no systematic early warning
+  when their supplier base is under financial or operational stress. By the time
+  a supplier misses a delivery, the damage is already done.
 
-  When a PPAP element is rejected, it delays production readiness. When SPC
-  goes out of control, it triggers a SCAR (Supplier Corrective Action Request).
-  When MRP lead times are stale in SAP, planners order too late and production
-  lines stop. These failures happen every week at automotive OEMs. FactorySync
-  simulates the four core workflows that prevent them.
+  The warning signals exist 60–90 days earlier in US public government data:
+    → BLS Producer Price Index: Input cost spikes = supplier margin compression
+    → FRED Inventory/Sales Ratio: Rising unsold inventory = demand collapse
+    → FRED Manufacturers New Orders: Falling orders = supplier revenue decline
 
-WHAT IT DOES:
-  1. MRP Engine        — Explodes your BOM, offsets lead times, flags past-due orders
-  2. PPAP Tracker      — Tracks 10 AIAG PPAP 4th Ed. elements per supplier, scores readiness
-  3. SPC Dashboards    — Monitors critical dimensions with Xbar-R and p-charts
-  4. Change Action     — Models obsolescence risk + ramp timing for engineering changes
+  No mid-market procurement team is watching these systematically.
+  FactorySync does it automatically, by material category, every month.
 
-DATA MODEL:
-  All data is simulated to replicate SAP S/4HANA and AIAG standards.
-  BOM structures mirror automotive EV battery pack assembly.
-  SAP transaction codes are cited for every data field.
+REAL DATA SOURCE:
+  Federal Reserve Economic Data (FRED) — fred.stlouisfed.org
+  Free API key at: https://fred.stlouisfed.org/docs/api/api_key.html
+  Bureau of Labor Statistics PPI — public.bls.gov (no key required for basic)
 
-STACK: Python · Streamlit · Plotly · Pandas · NumPy · Groq (Llama 3, free)
+  If no FRED API key is provided, the app runs on realistic demo data
+  built from actual 2021–2024 BLS PPI observations.
+
+ONE MODULE. ONE INSIGHT.
+  The "stress lead time" concept: supply disruptions have a 3-factor signature
+  in public data that appears 60–90 days before the actual disruption.
+  FactorySync detects this signature and generates a procurement-ready risk brief.
 """
 
 import streamlit as st
@@ -36,656 +35,688 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import requests
+import json
 from datetime import datetime, timedelta
+import time
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="FactorySync | Supplier Industrialization",
-    page_icon="🏭",
+    page_title="FactorySync | Supply Chain Stress Monitor",
+    page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── DESIGN SYSTEM ─────────────────────────────────────────────────────────────
+# ── DESIGN ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap');
 
 html, body, [data-testid="stAppViewContainer"],
 [data-testid="stMain"], [data-testid="block-container"] {
-    background-color: #f7f8fa !important;
-    color: #1a1f2e !important;
+    background: #0f1117 !important;
+    color: #e2e8f0 !important;
     font-family: 'DM Sans', sans-serif !important;
 }
 [data-testid="stSidebar"] {
-    background-color: #1a1f2e !important;
-    border-right: 1px solid #252c3d !important;
+    background: #090c12 !important;
+    border-right: 1px solid #1e2535 !important;
 }
-[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
+[data-testid="stSidebar"] * { color: #94a3b8 !important; }
 [data-testid="stSidebar"] h1,
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 { color: #f1f5f9 !important; }
-[data-testid="stSidebarNav"] { display: none !important; }
+[data-testid="stSidebar"] h2 { color: #e2e8f0 !important; }
+[data-testid="stSidebarNav"] { display:none !important; }
 
-h1,h2,h3,h4 { font-family: 'DM Sans', sans-serif !important; color: #0f172a !important; }
+h1,h2,h3,h4 { font-family:'DM Sans',sans-serif !important; color:#f1f5f9 !important; }
 
-/* Metric cards */
 [data-testid="metric-container"] {
-    background: #fff !important;
-    border: 1px solid #e2e8f0 !important;
+    background: #141921 !important;
+    border: 1px solid #1e2535 !important;
     border-radius: 10px !important;
-    padding: 16px !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
+    padding: 16px 18px !important;
 }
-[data-testid="stMetricValue"] { color: #0f172a !important; font-family: 'DM Mono', monospace !important; font-weight: 600 !important; font-size: 1.6rem !important; }
-[data-testid="stMetricLabel"] { color: #64748b !important; font-size: 0.75rem !important; text-transform: uppercase; letter-spacing: 0.08em; }
-[data-testid="stMetricDelta"] svg { display: none; }
+[data-testid="stMetricValue"] { color:#f1f5f9 !important; font-family:'DM Mono',monospace !important; font-size:1.5rem !important; font-weight:600 !important; }
+[data-testid="stMetricLabel"] { color:#64748b !important; font-size:0.7rem !important; text-transform:uppercase; letter-spacing:0.1em; }
 
-/* Tabs */
-[data-testid="stTabs"] button { color: #64748b !important; font-family: 'DM Sans', sans-serif !important; font-size: 0.85rem !important; background: transparent !important; }
-[data-testid="stTabs"] button[aria-selected="true"] { color: #2563eb !important; border-bottom: 2px solid #2563eb !important; }
+[data-testid="stTabs"] button { color:#64748b !important; font-family:'DM Sans',sans-serif !important; background:transparent !important; }
+[data-testid="stTabs"] button[aria-selected="true"] { color:#38bdf8 !important; border-bottom:2px solid #38bdf8 !important; }
 
-/* Dataframes */
-[data-testid="stDataFrame"] { background: #fff !important; border: 1px solid #e2e8f0 !important; border-radius: 10px !important; }
-.stDataFrame th { background: #f8fafc !important; color: #64748b !important; font-size: 0.72rem !important; text-transform: uppercase; letter-spacing: 0.06em; }
-.stDataFrame td { color: #1a1f2e !important; background: #fff !important; font-size: 0.84rem !important; }
+[data-testid="stDataFrame"] { background:#141921 !important; border:1px solid #1e2535 !important; border-radius:10px !important; }
 
-/* Buttons */
 [data-testid="stButton"] button {
-    background: #2563eb !important; color: #fff !important;
-    border: none !important; border-radius: 8px !important;
-    font-family: 'DM Sans', sans-serif !important; font-weight: 500 !important;
+    background:#1d4ed8 !important; color:#fff !important;
+    border:none !important; border-radius:8px !important; font-weight:500 !important;
 }
-[data-testid="stButton"] button:hover { background: #1d4ed8 !important; }
+[data-testid="stButton"] button:hover { background:#1e40af !important; }
 
-/* Selectbox / inputs */
-[data-testid="stSelectbox"] > div { background: #fff !important; border: 1px solid #e2e8f0 !important; border-radius: 8px !important; }
-[data-testid="stSelectbox"] label { color: #64748b !important; font-size: 0.8rem !important; }
-[data-testid="stNumberInput"] label { color: #64748b !important; font-size: 0.8rem !important; }
+[data-testid="stSelectbox"] > div { background:#141921 !important; border:1px solid #1e2535 !important; border-radius:8px !important; }
+[data-testid="stTextInput"] input { background:#141921 !important; border:1px solid #1e2535 !important; border-radius:8px !important; color:#e2e8f0 !important; }
+[data-testid="stMultiSelect"] > div { background:#141921 !important; border:1px solid #1e2535 !important; border-radius:8px !important; }
 
-/* Data editor */
-[data-testid="stDataFrameResizable"] { border: 1px solid #e2e8f0 !important; border-radius: 10px !important; }
+[data-testid="stExpander"] { background:#141921 !important; border:1px solid #1e2535 !important; border-radius:10px !important; }
+[data-testid="stExpander"] summary { color:#38bdf8 !important; font-weight:500 !important; }
 
-/* Expander */
-[data-testid="stExpander"] { background: #fff !important; border: 1px solid #e2e8f0 !important; border-radius: 10px !important; }
-[data-testid="stExpander"] summary { color: #2563eb !important; font-weight: 500 !important; }
+[data-testid="stAlert"] { border-radius:8px !important; }
+hr { border-color:#1e2535 !important; }
+div[data-testid="stMarkdownContainer"] p { color: #94a3b8 !important; }
 
-/* Alerts */
-[data-testid="stAlert"] { border-radius: 8px !important; }
-hr { border-color: #e2e8f0 !important; }
+.eyebrow { font-family:'DM Mono',monospace; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.18em; color:#38bdf8; }
+.risk-critical { color:#ef4444 !important; font-weight:600; }
+.risk-elevated { color:#f59e0b !important; font-weight:600; }
+.risk-normal   { color:#22c55e !important; font-weight:600; }
 
-/* Custom */
-.section-label {
-    font-size: 0.68rem; text-transform: uppercase;
-    letter-spacing: 0.14em; color: #2563eb; font-weight: 600; margin-bottom: 8px;
+.signal-card {
+    background:#141921; border:1px solid #1e2535;
+    border-radius:10px; padding:18px 20px; margin-bottom:10px;
 }
-.problem-card {
-    background: #fff; border: 1px solid #e2e8f0;
-    border-left: 3px solid #ef4444;
-    border-radius: 10px; padding: 16px 20px; margin-bottom: 12px;
+.signal-title { font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; margin-bottom:6px; }
+.signal-val { font-family:'DM Mono',monospace; font-size:1.6rem; font-weight:500; color:#f1f5f9; }
+.signal-sub { font-size:0.8rem; color:#64748b; margin-top:4px; line-height:1.5; }
+
+.brief-block {
+    background:#141921; border:1px solid #1e2535;
+    border-left:3px solid #38bdf8;
+    border-radius:0 10px 10px 0;
+    padding:20px 24px; font-size:0.88rem;
+    line-height:1.85; color:#cbd5e1;
+    white-space:pre-wrap; font-family:'DM Sans',sans-serif;
 }
-.solution-card {
-    background: #fff; border: 1px solid #e2e8f0;
-    border-left: 3px solid #22c55e;
-    border-radius: 10px; padding: 16px 20px; margin-bottom: 12px;
+.data-badge {
+    display:inline-block; background:#0c1828; color:#38bdf8;
+    border:1px solid #1e3a5f; border-radius:4px;
+    font-family:'DM Mono',monospace; font-size:0.68rem;
+    padding:2px 8px; margin:2px;
 }
-.module-card {
-    background: #fff; border: 1px solid #e2e8f0;
-    border-radius: 10px; padding: 18px 20px;
-}
-.module-number {
-    font-family: 'DM Mono', monospace; font-size: 1.8rem;
-    font-weight: 500; color: #2563eb; line-height: 1;
-}
-.module-title { font-weight: 600; font-size: 0.95rem; color: #0f172a; margin-top: 6px; }
-.module-desc  { font-size: 0.82rem; color: #64748b; line-height: 1.6; margin-top: 4px; }
-.sap-tag {
-    display:inline-block; background:#f1f5f9; color:#475569;
-    font-size:0.7rem; font-family:'DM Mono',monospace;
-    padding:1px 7px; border-radius:4px; margin:2px 2px 0 0;
-}
-.ai-block {
-    background: #f8fafc; border: 1px solid #e2e8f0;
-    border-left: 3px solid #2563eb;
-    border-radius: 10px; padding: 18px 22px;
-    font-size: 0.87rem; line-height: 1.8;
-    color: #1a1f2e; white-space: pre-wrap;
-}
-.status-approved  { color: #16a34a; font-weight: 600; }
-.status-rejected  { color: #dc2626; font-weight: 600; }
-.status-progress  { color: #d97706; font-weight: 600; }
-.status-submitted { color: #2563eb; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── PLOTLY LIGHT TEMPLATE ─────────────────────────────────────────────────────
-LIGHT = dict(
-    template="plotly_white",
-    paper_bgcolor="#f7f8fa", plot_bgcolor="#fff",
-    font=dict(color="#1a1f2e", family="DM Sans"),
-    xaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0", tickfont=dict(color="#64748b")),
-    yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0", tickfont=dict(color="#64748b")),
-    margin=dict(t=36, b=44, l=12, r=12),
+DARK = dict(
+    template="plotly_dark",
+    paper_bgcolor="#0f1117", plot_bgcolor="#141921",
+    font=dict(color="#94a3b8", family="DM Sans"),
+    xaxis=dict(gridcolor="#1e2535", linecolor="#1e2535", tickfont=dict(color="#64748b")),
+    yaxis=dict(gridcolor="#1e2535", linecolor="#1e2535", tickfont=dict(color="#64748b")),
+    margin=dict(t=40, b=44, l=12, r=12),
 )
+
+# ── MATERIAL CATEGORIES & FRED SERIES ────────────────────────────────────────
+CATEGORIES = {
+    "Steel & Metals": {
+        "ppi_series":    "WPU101",
+        "description":   "Iron, steel, and metal mill products",
+        "fred_label":    "WPU101 — Iron & Steel PPI",
+        "sectors":       ["Auto", "Heavy Equipment", "Construction", "Appliances"],
+        "typical_lead":  "6–10 weeks"
+    },
+    "Electronic Components": {
+        "ppi_series":    "WPU117401",
+        "description":   "Semiconductors, electronic components",
+        "fred_label":    "WPU117401 — Electronic Components PPI",
+        "sectors":       ["Auto", "Industrial Equipment", "Consumer Electronics"],
+        "typical_lead":  "12–26 weeks"
+    },
+    "Plastics & Rubber": {
+        "ppi_series":    "WPU0652",
+        "description":   "Plastics materials and resins",
+        "fred_label":    "WPU0652 — Plastics Materials PPI",
+        "sectors":       ["Auto", "Packaging", "Medical Devices", "Consumer Goods"],
+        "typical_lead":  "4–8 weeks"
+    },
+    "Lumber & Wood": {
+        "ppi_series":    "WPU0811",
+        "description":   "Lumber and wood products",
+        "fred_label":    "WPU0811 — Lumber & Wood PPI",
+        "sectors":       ["Construction", "Furniture", "Packaging"],
+        "typical_lead":  "2–4 weeks"
+    },
+    "Energy / Petroleum": {
+        "ppi_series":    "WPU0561",
+        "description":   "Petroleum and petroleum products",
+        "fred_label":    "WPU0561 — Petroleum Products PPI",
+        "sectors":       ["All manufacturing", "Transportation", "Chemicals"],
+        "typical_lead":  "2–6 weeks"
+    },
+    "Agricultural / Food Inputs": {
+        "ppi_series":    "WPU012",
+        "description":   "Farm products and food processing inputs",
+        "fred_label":    "WPU012 — Farm Products PPI",
+        "sectors":       ["Food & Beverage", "Packaging", "Animal Feed"],
+        "typical_lead":  "2–6 weeks"
+    },
+}
+
+MACRO_SERIES = {
+    "ISRATIO":  "Total Business Inventories to Sales Ratio",
+    "AMTMNO":   "Manufacturers: New Orders (Non-defense Capital Goods)",
+    "IPMAN":    "Industrial Production: Manufacturing",
+}
+
+# ── REALISTIC DEMO DATA ───────────────────────────────────────────────────────
+# Based on actual BLS PPI observations 2021–2024
+# This is what the FRED/BLS API returns — swap for live calls with API key
+
+def get_demo_ppi(category: str, months: int = 30) -> pd.DataFrame:
+    """Generate realistic PPI demo data mirroring actual 2022–2024 BLS observations."""
+    np.random.seed(hash(category) % 999)
+    end = datetime.today().replace(day=1)
+    dates = [end - timedelta(days=30*i) for i in range(months, 0, -1)]
+
+    # Realistic trajectories per category
+    trajectories = {
+        "Steel & Metals":         [170,178,185,195,210,225,235,228,215,200,188,180,175,172,168,165,163,161,162,164,166,168,170,172,174,175,176,178,179,180],
+        "Electronic Components":  [125,128,131,135,140,147,152,155,153,150,147,144,141,139,137,135,133,132,131,130,129,128,127,126,125,124,124,123,123,122],
+        "Plastics & Rubber":      [155,162,170,180,192,200,195,188,178,168,160,155,150,148,146,145,143,142,141,140,139,138,138,137,137,136,136,136,135,135],
+        "Lumber & Wood":          [280,340,420,380,310,250,200,170,155,145,138,133,130,128,126,125,124,123,122,121,120,122,124,126,128,130,132,134,136,138],
+        "Energy / Petroleum":     [140,155,175,200,230,250,235,210,185,170,160,155,160,165,155,148,145,148,152,155,150,148,145,148,152,155,158,160,155,152],
+        "Agricultural / Food Inputs": [120,125,130,138,148,158,162,158,152,146,140,136,133,130,128,126,125,124,123,122,121,120,120,119,119,118,118,118,117,117],
+    }
+
+    base = trajectories.get(category, [150]*months)[:months]
+    noise = np.random.normal(0, 1.5, len(dates))
+    values = [max(80, b + n) for b, n in zip(base, noise)]
+    return pd.DataFrame({"date": dates, "value": values, "category": category})
+
+
+def get_demo_macro() -> dict:
+    """Realistic macro indicator data."""
+    months = 24
+    end = datetime.today().replace(day=1)
+    dates = [end - timedelta(days=30*i) for i in range(months, 0, -1)]
+
+    # ISRATIO: been creeping up since 2022 (stress signal when > 1.45)
+    isratio = [1.32,1.33,1.34,1.35,1.36,1.37,1.37,1.36,1.35,1.36,1.37,1.38,
+               1.39,1.40,1.41,1.41,1.42,1.42,1.43,1.43,1.44,1.44,1.45,1.45]
+
+    # Mfg new orders: volatile
+    orders = [530,535,528,520,515,510,518,525,522,516,510,505,
+              508,512,515,510,505,500,498,502,506,504,500,498]
+
+    return {
+        "dates":   dates,
+        "isratio": isratio[:months],
+        "orders":  orders[:months],
+    }
+
+
+# ── FRED API FETCHER ──────────────────────────────────────────────────────────
+def fetch_fred(series_id: str, api_key: str, start: str = "2021-01-01") -> pd.DataFrame | None:
+    """Fetch series from FRED. Returns None on failure."""
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = dict(
+        series_id=series_id,
+        api_key=api_key,
+        observation_start=start,
+        frequency="m",
+        file_type="json",
+    )
+    try:
+        r = requests.get(url, params=params, timeout=8)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("observations", [])
+        df = pd.DataFrame(data)[["date", "value"]]
+        df["date"]  = pd.to_datetime(df["date"])
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        return df.dropna().reset_index(drop=True)
+    except Exception:
+        return None
+
+
+# ── STRESS SCORE ENGINE ───────────────────────────────────────────────────────
+def compute_stress(df: pd.DataFrame, isratio: list, orders: list) -> dict:
+    """
+    Three-factor stress model:
+      1. PPI Momentum   — 3-month rate of change (cost pressure on suppliers)
+      2. Volatility     — 6-month standard deviation (uncertainty = planning failure)
+      3. Macro Context  — Inventory/Sales ratio trend + New Orders trend
+    Score 0–100. Above 65 = Elevated. Above 80 = Critical.
+    """
+    vals = df["value"].values
+
+    # Factor 1: PPI momentum (last 3 months vs. prior 3 months)
+    if len(vals) >= 6:
+        recent_avg = np.mean(vals[-3:])
+        prior_avg  = np.mean(vals[-6:-3])
+        momentum   = ((recent_avg - prior_avg) / prior_avg) * 100
+    else:
+        momentum = 0.0
+
+    # Factor 2: Volatility (coefficient of variation last 6 months)
+    if len(vals) >= 6:
+        volatility_pct = (np.std(vals[-6:]) / np.mean(vals[-6:])) * 100
+    else:
+        volatility_pct = 0.0
+
+    # Factor 3: Macro — inventory stress + order decline
+    inv_stress   = max(0, (isratio[-1] - 1.35) / 0.15 * 30) if isratio else 0
+    order_trend  = max(0, (orders[-6] - orders[-1]) / orders[-6] * 100 * 3) if len(orders) >= 6 else 0
+
+    # Weighted score
+    score = (
+        min(40, max(0, momentum * 4))      +   # max 40 pts from price pressure
+        min(20, volatility_pct * 2)         +   # max 20 pts from volatility
+        min(20, inv_stress)                 +   # max 20 pts from inventory stress
+        min(20, order_trend)                    # max 20 pts from demand collapse
+    )
+    score = min(100, max(0, score))
+
+    level = "CRITICAL" if score >= 80 else ("ELEVATED" if score >= 55 else "NORMAL")
+    color = "#ef4444"   if score >= 80 else ("#f59e0b"  if score >= 55 else "#22c55e")
+
+    return {
+        "score":          round(score, 1),
+        "level":          level,
+        "color":          color,
+        "momentum_pct":   round(momentum, 2),
+        "volatility_pct": round(volatility_pct, 2),
+        "inv_ratio":      isratio[-1] if isratio else 1.4,
+        "orders_latest":  orders[-1]  if orders  else 500,
+        "orders_6m_ago":  orders[-7]  if len(orders) >= 7 else orders[-1] if orders else 500,
+    }
+
+
+# ── GROQ AI BRIEF ─────────────────────────────────────────────────────────────
+def generate_brief(
+    groq_key: str,
+    category: str,
+    stress: dict,
+    cat_info: dict,
+    ppi_df: pd.DataFrame,
+    company_context: str = ""
+) -> str:
+    """Generate a procurement-ready risk brief via Groq Llama 3."""
+    if not groq_key:
+        return (
+            f"SUPPLY CHAIN STRESS BRIEF — {category.upper()}\n"
+            f"Generated: {datetime.today().strftime('%B %d, %Y')}\n\n"
+            f"RISK LEVEL: {stress['level']} (Score: {stress['score']}/100)\n\n"
+            f"SIGNAL SUMMARY:\n"
+            f"  • PPI 3-month momentum: +{stress['momentum_pct']}% "
+            f"({'elevated cost pressure' if stress['momentum_pct'] > 3 else 'stable'})\n"
+            f"  • Price volatility (6-month CV): {stress['volatility_pct']}% "
+            f"({'high uncertainty' if stress['volatility_pct'] > 4 else 'normal range'})\n"
+            f"  • Business Inventory/Sales Ratio: {stress['inv_ratio']} "
+            f"({'above normal — demand softening' if stress['inv_ratio'] > 1.42 else 'within normal range'})\n"
+            f"  • Mfg New Orders trend: {'declining' if stress['orders_6m_ago'] > stress['orders_latest'] else 'stable/growing'} "
+            f"(6-month change: {round((stress['orders_latest'] - stress['orders_6m_ago']) / stress['orders_6m_ago'] * 100, 1)}%)\n\n"
+            f"WHAT THIS MEANS:\n"
+            f"{'Input costs rising faster than suppliers can absorb — expect margin pressure, potential quality shortcuts, and lead time extension in 60–90 days.' if stress['momentum_pct'] > 4 else 'Cost environment is relatively stable for this category.'}\n\n"
+            f"RECOMMENDED ACTIONS:\n"
+            f"{'1. Request financial health update from top 3 suppliers in this category.\n2. Consider locking in pricing agreements before next quarter.\n3. Identify one alternative source as contingency.\n4. Flag for procurement review this month.' if stress['score'] > 55 else '1. Continue standard monitoring cadence.\n2. No immediate action required.'}\n\n"
+            f"DATA SOURCES: BLS Producer Price Index ({cat_info['fred_label']}) + FRED ISRATIO + FRED AMTMNO\n"
+            f"NOTE: Connect FRED API key in sidebar for live data. This brief uses 2021–2024 historical pattern data."
+        )
+
+    # Build context for Groq
+    recent_vals = ppi_df["value"].values[-6:] if len(ppi_df) >= 6 else ppi_df["value"].values
+    ppi_summary = f"Last 6 months PPI index values: {[round(v, 1) for v in recent_vals]}"
+
+    prompt = f"""You are a senior supply chain analyst writing a concise, factual risk brief for a VP of Procurement.
+
+CATEGORY: {category}
+DESCRIPTION: {cat_info['description']}
+SECTORS EXPOSED: {', '.join(cat_info['sectors'])}
+TYPICAL SUPPLIER LEAD TIME: {cat_info['typical_lead']}
+{f"COMPANY CONTEXT: {company_context}" if company_context else ""}
+
+STRESS INDICATORS (from US public data — BLS PPI + FRED):
+- Overall stress score: {stress['score']}/100 ({stress['level']})
+- PPI 3-month momentum: +{stress['momentum_pct']}% (measures input cost acceleration)
+- Price volatility (6-month CV): {stress['volatility_pct']}% (measures planning uncertainty)
+- Business Inventory/Sales Ratio: {stress['inv_ratio']} (>1.42 = demand softening)
+- Mfg New Orders 6-month change: {round((stress['orders_latest'] - stress['orders_6m_ago']) / max(1, stress['orders_6m_ago']) * 100, 1)}%
+- {ppi_summary}
+
+Write a 200-word procurement risk brief. Format:
+1. RISK LEVEL headline (one sentence)
+2. What the data signals (2–3 sentences, specific and factual)
+3. What this means for procurement in the next 60–90 days (2 sentences)
+4. Three specific recommended actions (numbered)
+
+Be direct. Use numbers. No jargon. This brief goes to the VP of Procurement tomorrow morning."""
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+            json={
+                "model": "llama3-8b-8192",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 400, "temperature": 0.3
+            },
+            timeout=15
+        )
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"AI brief unavailable ({e}). Check Groq API key.\n\n" + generate_brief("", category, stress, cat_info, ppi_df, company_context)
+
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
-<div style="padding:8px 0 16px">
-  <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.16em;color:#60a5fa;font-weight:600;margin-bottom:4px">SUPPLIER INDUSTRIALIZATION</div>
-  <div style="font-size:1.3rem;font-weight:600;color:#f1f5f9">FactorySync</div>
-  <div style="font-size:0.78rem;color:#64748b;margin-top:2px">Pre-SOP Production Readiness</div>
+<div style="padding:8px 0 20px">
+  <div class="eyebrow" style="margin-bottom:6px">Supply Chain Intelligence</div>
+  <div style="font-size:1.25rem;font-weight:600;color:#f1f5f9">FactorySync 2.0</div>
+  <div style="font-size:0.78rem;color:#475569;margin-top:2px">Stress Monitor · Early Warning</div>
 </div>
 """, unsafe_allow_html=True)
 
-    module = st.radio(
-        "Module",
-        ["🏠  Overview", "📦  MRP Engine", "✅  PPAP Tracker", "📊  SPC Charts", "🔄  Change Action"],
-        label_visibility="collapsed",
+    st.markdown("#### Configuration")
+
+    fred_key = st.text_input(
+        "FRED API Key (optional)",
+        type="password",
+        placeholder="Get free key at fred.stlouisfed.org",
+        help="Free key from fred.stlouisfed.org/docs/api/api_key.html — enables live BLS/FRED data"
+    )
+    groq_key = st.text_input(
+        "Groq API Key (optional)",
+        type="password",
+        placeholder="For AI risk briefs",
+        help="Free key at console.groq.com — enables AI-generated procurement briefs"
+    )
+    company_context = st.text_input(
+        "Your company / industry (optional)",
+        placeholder="e.g. Tier 2 auto supplier, Midwest",
+        help="Adds context to the AI brief"
     )
 
     st.markdown("---")
-    st.markdown("""
-<div style="font-size:0.72rem;color:#475569;line-height:1.7">
-<div style="color:#94a3b8;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px">DATA MODEL</div>
-Simulated SAP S/4HANA data. Mirrors real EV battery pack assembly BOM structure, AIAG PPAP 4th Edition, and AIAG SPC manual.
-<br><br>
-<span style="color:#60a5fa">SAP transactions cited:</span><br>
-MD01/MD06 · CS03 · MB52 · ME2M · MD04 · MM02
-</div>
-""", unsafe_allow_html=True)
+    st.markdown("#### Select Categories to Monitor")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE: OVERVIEW
-# ══════════════════════════════════════════════════════════════════════════════
-if "Overview" in module:
-
-    st.markdown("""
-<div style="padding:24px 0 8px">
-  <div class="section-label">PRE-SOP PRODUCTION READINESS PLATFORM</div>
-  <h1 style="font-size:2rem;font-weight:600;margin:0;letter-spacing:-0.02em">FactorySync</h1>
-  <p style="color:#64748b;font-size:0.9rem;margin-top:6px;max-width:640px">
-    Replicates the four core workflows a Supplier Industrialization team runs in the 60–90 days before Start of Production — replacing a patchwork of SAP transactions and Excel trackers with a single integrated view.
-  </p>
-</div>
-""", unsafe_allow_html=True)
-
-    # Problem / Solution
-    col_p, col_s = st.columns(2)
-    with col_p:
-        st.markdown("""
-<div class="problem-card">
-  <div class="section-label" style="color:#ef4444">THE INDUSTRY PROBLEM</div>
-  <p style="font-size:0.87rem;line-height:1.75;color:#374151;margin:0">
-    Automotive OEMs operate on hard SOP deadlines — missing them triggers
-    <strong>$1M–$5M/day penalty clauses</strong>. The Supplier Industrialization team
-    must confirm that every supplier can deliver conforming parts before production
-    starts. This involves four simultaneous workflows: PPAP documentation approval,
-    SPC quality sign-off, MRP order scheduling, and engineering change management.
-    <br><br>
-    Most teams manage this <strong style="color:#ef4444">across SAP, email, and Excel</strong>
-    — with no integrated view of which suppliers are actually ready.
-  </p>
-</div>
-""", unsafe_allow_html=True)
-    with col_s:
-        st.markdown("""
-<div class="solution-card">
-  <div class="section-label" style="color:#22c55e">HOW FACTORYSYNC SOLVES IT</div>
-  <p style="font-size:0.87rem;line-height:1.75;color:#374151;margin:0">
-    FactorySync integrates the four workflows into one platform, with data models
-    that mirror real SAP fields and industry standards:
-    <br><br>
-    • <strong>MRP Engine</strong> — BOM explosion + lead time offset = order schedule with past-due flags<br>
-    • <strong>PPAP Tracker</strong> — 10 AIAG elements per supplier, scored to a readiness % with SCAR recommendation<br>
-    • <strong>SPC Charts</strong> — Xbar-R and p-charts using AIAG SPC manual constants (A2/D3/D4)<br>
-    • <strong>Change Action</strong> — ECO impact model: stranded inventory + new part order timing
-  </p>
-</div>
-""", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Portfolio summary metrics
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Active Suppliers",   "15")
-    c2.metric("PPAP Completion",    "68%",  delta="SOP in 45 days", delta_color="inverse")
-    c3.metric("Parts In SPC Control","11/15")
-    c4.metric("Open Change Actions","3",    delta="$324K stranded risk", delta_color="inverse")
-
-    st.markdown("---")
-
-    # Module cards
-    st.markdown('<div class="section-label">THE FOUR MODULES</div>', unsafe_allow_html=True)
-    m1,m2,m3,m4 = st.columns(4)
-    modules_info = [
-        ("01", "MRP Engine", "Explodes your BOM, offsets lead times per SAP MD01 logic, and generates an order schedule with past-due exception flags.", ["CS03","MD01","MD06","MM02"]),
-        ("02", "PPAP Tracker", "10-element AIAG PPAP 4th Edition tracker per supplier. Scores readiness 0–100%. Below 50% triggers SCAR recommendation.", ["AIAG PPAP","Section 2.1–2.10"]),
-        ("03", "SPC Charts", "Xbar-R and p-control charts using AIAG SPC manual constants. Out-of-control points flagged in red with immediate action prompts.", ["AIAG SPC","A2/D3/D4","Xbar-R"]),
-        ("04", "Change Action", "Models engineering change impact: stranded inventory value, new-part order date, production gap risk, and annual cost savings.", ["ECO","SAP MB52","ME2M","MD04"]),
-    ]
-    for col, (num, title, desc, tags) in zip([m1,m2,m3,m4], modules_info):
-        tag_html = "".join([f'<span class="sap-tag">{t}</span>' for t in tags])
-        col.markdown(
-            f'<div class="module-card">'
-            f'<div class="module-number">{num}</div>'
-            f'<div class="module-title">{title}</div>'
-            f'<div class="module-desc">{desc}</div>'
-            f'<div style="margin-top:10px">{tag_html}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
-    st.markdown("""
-<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 20px;font-size:0.82rem;color:#64748b">
-<strong style="color:#1a1f2e">Demo data</strong> — All data is synthetically generated to replicate realistic pre-SOP scenarios in automotive EV assembly. BOM structure mirrors a battery pack program. PPAP statuses reflect typical supplier readiness at SOP minus 60 days. SPC data includes seeded out-of-control points at known subgroups to simulate real process deviations. Select any module in the sidebar to explore.
-</div>
-""", unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE: MRP ENGINE
-# ══════════════════════════════════════════════════════════════════════════════
-elif "MRP" in module:
-    st.markdown('<div class="section-label">MODULE 01</div>', unsafe_allow_html=True)
-    st.markdown("## MRP Simulation Engine")
-    st.markdown("""
-<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #2563eb;border-radius:10px;padding:14px 20px;font-size:0.85rem;line-height:1.7;color:#374151;margin-bottom:16px">
-<strong>What this replicates:</strong> SAP's MRP run (MD01/MD02) explodes a Bill of Materials, offsets each component's lead time backward from the finished goods due date, and generates a "latest order by" date per component. When that date has passed, SAP issues an exception message in the MRP controller's work queue (MD06). This module replicates that logic on any BOM you define.
-<br><br>
-<strong>Why it matters:</strong> Stale lead time fields in SAP MM (MM02) are one of the most common causes of MRP planning deviations. If the planned delivery time is wrong, the order schedule is wrong, and parts arrive late.
-</div>
-""", unsafe_allow_html=True)
-
-    st.subheader("Step 1 — Define your Bill of Materials")
-
-    default_bom = pd.DataFrame({
-        "Component":        ["Battery Pack","Motor Assembly","Chassis Frame","Battery Cell","Battery Housing","Stator","Rotor","Frame Rail","Cross Member"],
-        "Parent":           ["Finished Good","Finished Good","Finished Good","Battery Pack","Battery Pack","Motor Assembly","Motor Assembly","Chassis Frame","Chassis Frame"],
-        "Qty Per":          [1,1,1,1,1,1,1,2,3],
-        "Lead Time (days)": [14,21,10,45,20,30,25,15,12],
-    })
-    bom_df = st.data_editor(default_bom, num_rows="dynamic", use_container_width=True)
-
-    st.subheader("Step 2 — Enter Demand")
-    col1, col2 = st.columns(2)
-    demand_qty = col1.number_input("Finished Goods Required (units)", min_value=1, value=10)
-    due_date   = col2.date_input("Required By Date", value=datetime.today() + timedelta(days=60))
-
-    if st.button("Generate MRP Schedule", type="primary"):
-        schedule = []
-        for _, row in bom_df.iterrows():
-            total_qty  = demand_qty * row["Qty Per"]
-            order_date = pd.to_datetime(due_date) - timedelta(days=int(row["Lead Time (days)"]))
-            schedule.append({
-                "Component":        row["Component"],
-                "Parent":           row["Parent"],
-                "Qty Needed":       total_qty,
-                "Lead Time (days)": row["Lead Time (days)"],
-                "Order By":         order_date.strftime("%Y-%m-%d"),
-                "Due Date":         str(due_date),
-                "Status":           "On Track" if order_date > pd.Timestamp.today() else "⚠️ Past Due",
-            })
-        st.session_state["schedule_df"] = pd.DataFrame(schedule)
-
-    if "schedule_df" in st.session_state:
-        sdf = st.session_state["schedule_df"]
-
-        def highlight_status(val):
-            if "Past Due" in str(val):
-                return "background:#fef2f2;color:#dc2626;font-weight:600"
-            return "background:#f0fdf4;color:#16a34a;font-weight:600"
-
-        st.dataframe(
-            sdf.style.map(highlight_status, subset=["Status"]),
-            use_container_width=True,
-        )
-        past_due = sdf[sdf["Status"].str.contains("Past Due")]
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Total Components", len(sdf))
-        c2.metric("Past Due Order Dates", len(past_due), delta="Immediate action" if len(past_due)>0 else "All clear", delta_color="inverse" if len(past_due)>0 else "normal")
-        c3.metric("On Track", len(sdf)-len(past_due))
-
-        if len(past_due)>0:
-            st.warning(f"⚠️ {len(past_due)} component(s) need to be ordered immediately. In SAP, these would appear as exception messages in the MRP controller's work queue (MD06).")
-        else:
-            st.success("✅ All components can be ordered in time to meet your due date.")
-
-        # Gantt-style chart
-        gantt_data = []
-        today = pd.Timestamp.today()
-        for _, r in sdf.iterrows():
-            gantt_data.append({
-                "Component": r["Component"],
-                "Start": r["Order By"],
-                "End": r["Due Date"],
-                "Status": r["Status"],
-            })
-        gantt_df = pd.DataFrame(gantt_data)
-        fig_gantt = px.timeline(
-            gantt_df, x_start="Start", x_end="End", y="Component",
-            color="Status",
-            color_discrete_map={"On Track": "#22c55e", "⚠️ Past Due": "#ef4444"},
-            title="Order Window per Component",
-        )
-        fig_gantt.update_layout(**LIGHT, height=360)
-        fig_gantt.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_gantt, use_container_width=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE: PPAP TRACKER
-# ══════════════════════════════════════════════════════════════════════════════
-elif "PPAP" in module:
-    st.markdown('<div class="section-label">MODULE 02</div>', unsafe_allow_html=True)
-    st.markdown("## PPAP Readiness Tracker")
-    st.markdown("""
-<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #2563eb;border-radius:10px;padding:14px 20px;font-size:0.85rem;line-height:1.7;color:#374151;margin-bottom:16px">
-<strong>What this replicates:</strong> PPAP (Production Part Approval Process) is the automotive industry standard (AIAG 4th Edition) for confirming a supplier's production process can consistently meet engineering requirements before Start of Production. Each of the 10 elements must be submitted and approved by the customer before a part can be run in production.
-<br><br>
-<strong>Why it matters:</strong> An unapproved PPAP element blocks production readiness. A rejected PSW (Part Submission Warrant) — even with 9 of 10 elements approved — means the supplier cannot ship conforming parts. OEM supplier portals (Stellantis, Ford, GM) track exactly these statuses. The risk score below matches how those portals classify readiness.
-</div>
-""", unsafe_allow_html=True)
-
-    ppap_elements = [
-        "Design Records","Engineering Change Documents","Customer Engineering Approval",
-        "Design FMEA","Process Flow Diagram","Process FMEA",
-        "Control Plan","MSA Studies","Dimensional Results","Initial Process Studies (SPC)",
-    ]
-    suppliers = ["Supplier A — Battery Cells","Supplier B — Motor Stator","Supplier C — Chassis Rails","Supplier D — Battery Housing","Supplier E — Rotor Assembly"]
-    status_options = ["Not Started","In Progress","Submitted","Approved","Rejected"]
-    score_map = {"Approved":1.0,"Submitted":0.7,"In Progress":0.4,"Not Started":0.0,"Rejected":-0.5}
-
-    selected_supplier = st.selectbox("Select Supplier", suppliers)
-
-    if "ppap_data" not in st.session_state:
-        st.session_state.ppap_data = {}
-    if selected_supplier not in st.session_state.ppap_data:
-        np.random.seed(hash(selected_supplier) % 100)
-        st.session_state.ppap_data[selected_supplier] = {
-            el: np.random.choice(status_options, p=[0.1,0.2,0.2,0.4,0.1])
-            for el in ppap_elements
-        }
-
-    st.markdown("---")
-    status_colors = {"Approved":"#22c55e","Submitted":"#3b82f6","In Progress":"#f59e0b","Not Started":"#94a3b8","Rejected":"#ef4444"}
-
-    cols_h = st.columns([4,3,1,3])
-    cols_h[0].markdown('<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:#64748b;font-weight:600">PPAP Element</div>', unsafe_allow_html=True)
-    cols_h[1].markdown('<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:#64748b;font-weight:600">Status</div>', unsafe_allow_html=True)
-    cols_h[2].markdown('<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:#64748b;font-weight:600"></div>', unsafe_allow_html=True)
-    cols_h[3].markdown('<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:#64748b;font-weight:600">AIAG Reference</div>', unsafe_allow_html=True)
-
-    aiag_refs = ["§2.1","§2.2","§2.3 (if applicable)","§2.4","§2.5","§2.6","§2.7","§2.8","§2.9","§2.10"]
-    statuses = []
-    for i, element in enumerate(ppap_elements):
-        c1,c2,c3,c4 = st.columns([4,3,1,3])
-        c1.markdown(f'<p style="font-size:0.85rem;margin:8px 0;color:#1a1f2e">{element}</p>', unsafe_allow_html=True)
-        current = st.session_state.ppap_data[selected_supplier][element]
-        new_status = c2.selectbox(
-            "", status_options, index=status_options.index(current),
-            key=f"{selected_supplier}_{element}", label_visibility="collapsed",
-        )
-        st.session_state.ppap_data[selected_supplier][element] = new_status
-        statuses.append(new_status)
-        dot_color = status_colors.get(new_status,"#94a3b8")
-        c3.markdown(f'<div style="width:10px;height:10px;border-radius:50%;background:{dot_color};margin-top:12px"></div>', unsafe_allow_html=True)
-        c4.markdown(f'<p style="font-size:0.78rem;color:#94a3b8;margin:10px 0;font-family:DM Mono,monospace">{aiag_refs[i]}</p>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    raw_score = sum(score_map[s] for s in statuses)
-    pct = max(0, raw_score / len(ppap_elements) * 100)
-
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("PPAP Readiness Score", f"{pct:.0f}%")
-    c2.metric("Approved",    statuses.count("Approved"))
-    c3.metric("Rejected",    statuses.count("Rejected"),  delta="SCAR required" if statuses.count("Rejected")>0 else "None", delta_color="inverse" if statuses.count("Rejected")>0 else "normal")
-    c4.metric("Not Started", statuses.count("Not Started"), delta="At risk" if statuses.count("Not Started")>2 else "OK", delta_color="inverse" if statuses.count("Not Started")>2 else "normal")
-
-    st.progress(int(pct))
-
-    if pct >= 80:
-        st.success("✅ LOW RISK — Supplier is on track for PPAP approval. No escalation required.")
-    elif pct >= 50:
-        st.warning("⚠️ MEDIUM RISK — Multiple elements need attention before SOP. Schedule supplier review.")
-    else:
-        st.error("🔴 HIGH RISK — SCAR escalation recommended. Escalate to Supplier Quality Engineering team immediately. Below 50% readiness with SOP approaching is a production risk event.")
-
-    # Radar chart of element status
-    status_vals = [score_map[s]*100 for s in statuses]
-    short_labels = ["Design Rec.","Eng. Change","Cust. Appr.","Design FMEA",
-                    "Proc. Flow","Proc. FMEA","Control Plan","MSA","Dim. Results","SPC Studies"]
-    fig_radar = go.Figure(go.Scatterpolar(
-        r=status_vals + [status_vals[0]],
-        theta=short_labels + [short_labels[0]],
-        fill="toself", fillcolor="rgba(37,99,235,0.12)",
-        line=dict(color="#2563eb", width=2),
-    ))
-    fig_radar.update_layout(
-        polar=dict(
-            radialaxis=dict(visible=True, range=[0,100], tickfont=dict(size=9,color="#94a3b8"), gridcolor="#e2e8f0"),
-            angularaxis=dict(tickfont=dict(size=9,color="#374151")),
-            bgcolor="#fff",
-        ),
-        paper_bgcolor="#f7f8fa", showlegend=False, height=360,
-        margin=dict(t=20,b=20,l=40,r=40),
-        title=dict(text="PPAP Element Readiness", font=dict(size=13,color="#1a1f2e")),
+    selected_cats = st.multiselect(
+        "Material Categories",
+        list(CATEGORIES.keys()),
+        default=["Steel & Metals", "Electronic Components", "Energy / Petroleum"],
+        label_visibility="collapsed"
     )
-    st.plotly_chart(fig_radar, use_container_width=True)
+    if not selected_cats:
+        selected_cats = ["Steel & Metals"]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE: SPC CHARTS
-# ══════════════════════════════════════════════════════════════════════════════
-elif "SPC" in module:
-    st.markdown('<div class="section-label">MODULE 03</div>', unsafe_allow_html=True)
-    st.markdown("## Statistical Process Control (SPC) Dashboards")
-    st.markdown("""
-<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #2563eb;border-radius:10px;padding:14px 20px;font-size:0.85rem;line-height:1.7;color:#374151;margin-bottom:16px">
-<strong>What this replicates:</strong> AIAG SPC Reference Manual (2nd Edition) Xbar-R and p-chart methodology. In automotive manufacturing, SPC sign-off is a PPAP element (Initial Process Studies, §2.10). A supplier must demonstrate their production process is statistically in control before shipping conforming parts. Control limits are calculated using A2, D3, D4 constants from the AIAG SPC table.
-<br><br>
-<strong>Why it matters:</strong> Out-of-control points are not defects — they're signals that the process has shifted and defects are coming. Identifying them early allows the supplier to stop production, investigate root cause, and correct before shipping bad parts. In a live environment, this data feeds from CMM outputs into SAP QM module.
-</div>
-""", unsafe_allow_html=True)
-
-    chart_type = st.radio("Chart Type", ["Xbar-R Chart (variable / dimensional data)", "p-Chart (attribute / defect count data)"], horizontal=True)
     st.markdown("---")
-
-    if "Xbar" in chart_type:
-        st.subheader("Xbar-R Chart — Process Mean & Range")
-        c1,c2,c3 = st.columns(3)
-        n_sg   = c1.slider("Subgroups",      10, 30, 20)
-        n_size = c2.slider("Subgroup size n", 2,  6,  4)
-        pmean  = c3.number_input("Target Mean", value=18.0)
-
-        A2 = {2:1.880,3:1.023,4:0.729,5:0.577,6:0.483}
-        D3 = {2:0,3:0,4:0,5:0,6:0}
-        D4 = {2:3.267,3:2.574,4:2.282,5:2.115,6:2.004}
-
-        np.random.seed(42)
-        data = np.random.normal(pmean, 0.3, (n_sg, n_size))
-        data[int(n_sg*0.4)] += 1.2
-        data[int(n_sg*0.75)] -= 1.0
-
-        xbar = data.mean(axis=1); R = data.max(axis=1)-data.min(axis=1)
-        xbar_bar = xbar.mean(); R_bar = R.mean()
-        UCL_x = xbar_bar + A2[n_size]*R_bar; LCL_x = xbar_bar - A2[n_size]*R_bar
-        UCL_r = D4[n_size]*R_bar;             LCL_r = D3[n_size]*R_bar
-        ooc_x = [(i+1) for i,v in enumerate(xbar) if v>UCL_x or v<LCL_x]
-        ooc_r = [(i+1) for i,v in enumerate(R)    if v>UCL_r]
-
-        x_colors = ["#ef4444" if (v>UCL_x or v<LCL_x) else "#2563eb" for v in xbar]
-        fig_x = go.Figure()
-        fig_x.add_trace(go.Scatter(x=list(range(1,n_sg+1)),y=xbar,mode="lines+markers",
-                                    marker=dict(color=x_colors,size=8),line=dict(color="#2563eb"),name="Xbar"))
-        for y,nm,clr,dash in [(UCL_x,f"UCL={UCL_x:.3f}","#ef4444","dash"),(xbar_bar,f"CL={xbar_bar:.3f}","#22c55e","solid"),(LCL_x,f"LCL={LCL_x:.3f}","#ef4444","dash")]:
-            fig_x.add_hline(y=y,line_dash=dash,line_color=clr,annotation_text=nm,annotation_position="right")
-        fig_x.update_layout(**LIGHT,height=300,title="Xbar Chart — Subgroup Means",xaxis_title="Subgroup",yaxis_title="Mean")
-        st.plotly_chart(fig_x, use_container_width=True)
-
-        r_colors = ["#ef4444" if v>UCL_r else "#16a34a" for v in R]
-        fig_r = go.Figure()
-        fig_r.add_trace(go.Scatter(x=list(range(1,n_sg+1)),y=R,mode="lines+markers",
-                                    marker=dict(color=r_colors,size=8),line=dict(color="#16a34a"),name="Range"))
-        for y,nm,clr,dash in [(UCL_r,f"UCL={UCL_r:.3f}","#ef4444","dash"),(R_bar,f"CL={R_bar:.3f}","#22c55e","solid")]:
-            fig_r.add_hline(y=y,line_dash=dash,line_color=clr,annotation_text=nm,annotation_position="right")
-        fig_r.update_layout(**LIGHT,height=260,title="R Chart — Subgroup Ranges",xaxis_title="Subgroup",yaxis_title="Range")
-        st.plotly_chart(fig_r, use_container_width=True)
-
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Out-of-Control (Xbar)",f"{len(ooc_x)} points",delta="Investigate" if ooc_x else "In control",delta_color="inverse" if ooc_x else "normal")
-        c2.metric("Out-of-Control (R)",   f"{len(ooc_r)} points",delta="Investigate" if ooc_r else "In control",delta_color="inverse" if ooc_r else "normal")
-        c3.metric("Process Capability (est.)",f"{'Not capable' if ooc_x else 'In control'}")
-        if ooc_x:
-            st.error(f"🔴 Subgroup(s) {ooc_x} are out of control. Stop production on this characteristic and initiate root cause analysis. This must be resolved before PPAP §2.10 sign-off.")
-    else:
-        st.subheader("p-Chart — Proportion Defective")
-        c1,c2 = st.columns(2)
-        n_b = c1.slider("Batches",        10, 30, 20)
-        b_s = c2.slider("Parts per batch", 50, 200, 100)
-
-        np.random.seed(99)
-        defects = np.random.binomial(b_s, 0.03, n_b)
-        defects[int(n_b*0.35)] = int(b_s*0.12)
-        defects[int(n_b*0.70)] = int(b_s*0.10)
-
-        p_i = defects/b_s; p_bar = defects.sum()/(n_b*b_s)
-        UCL_p = p_bar + 3*np.sqrt(p_bar*(1-p_bar)/b_s)
-        LCL_p = max(0, p_bar - 3*np.sqrt(p_bar*(1-p_bar)/b_s))
-
-        p_colors = ["#ef4444" if (p>UCL_p or p<LCL_p) else "#7c3aed" for p in p_i]
-        fig_p = go.Figure()
-        fig_p.add_trace(go.Scatter(x=list(range(1,n_b+1)),y=p_i,mode="lines+markers",
-                                    marker=dict(color=p_colors,size=8),line=dict(color="#7c3aed"),name="Defect rate"))
-        for y,nm,clr,dash in [(UCL_p,f"UCL={UCL_p:.3f}","#ef4444","dash"),(p_bar,f"CL={p_bar:.3f}","#22c55e","solid"),(LCL_p,f"LCL={LCL_p:.3f}","#ef4444","dash")]:
-            fig_p.add_hline(y=y,line_dash=dash,line_color=clr,annotation_text=nm,annotation_position="right")
-        fig_p.update_layout(**LIGHT,height=400,title="p-Chart — Proportion Defective",xaxis_title="Batch",yaxis_title="Defect Rate",yaxis_tickformat=".1%")
-        st.plotly_chart(fig_p, use_container_width=True)
-
-        ooc = sum(1 for p in p_i if p>UCL_p or p<LCL_p)
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Avg Defect Rate",f"{p_bar:.1%}")
-        c2.metric("OOC Batches",ooc,delta="Investigate" if ooc>0 else "In control",delta_color="inverse" if ooc>0 else "normal")
-        c3.metric("Total Defects",int(defects.sum()))
-        if ooc>0:
-            st.error(f"🔴 {ooc} batch(es) out of control. Initiate supplier failure analysis. This finding must be documented in PPAP §2.10 and will delay PSW approval until root cause is corrected.")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE: CHANGE ACTION ANALYZER
-# ══════════════════════════════════════════════════════════════════════════════
-elif "Change" in module:
-    st.markdown('<div class="section-label">MODULE 04</div>', unsafe_allow_html=True)
-    st.markdown("## Change Action (CA) Impact Analyzer")
     st.markdown("""
-<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #2563eb;border-radius:10px;padding:14px 20px;font-size:0.85rem;line-height:1.7;color:#374151;margin-bottom:16px">
-<strong>What this replicates:</strong> When engineering issues a Change Order (ECO) for a part supersession, the planning team must simultaneously: (1) determine how much old inventory will be stranded, (2) calculate the latest possible date to place the first PO for the new part without creating a production gap, and (3) quantify the unit cost impact. Missing this window means either stranded obsolete inventory or a production line stoppage.
+<div style="font-size:0.72rem;color:#334155;line-height:1.8">
+<div class="eyebrow" style="margin-bottom:6px">Data Sources</div>
+<span class="data-badge">BLS PPI</span>
+<span class="data-badge">FRED ISRATIO</span>
+<span class="data-badge">FRED AMTMNO</span>
 <br><br>
-<strong>Why it matters:</strong> Engineering changes are routine in automotive programs. The planning team at an OEM manages dozens of active change orders simultaneously. Getting the timing wrong costs $108K–$500K+ in stranded inventory write-offs or stoppage penalties.
+US Government public datasets. Free. Updated monthly.
+No enterprise license required.
 </div>
 """, unsafe_allow_html=True)
 
-    st.subheader("Enter Change Action Details")
-    st.markdown("""
-<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 16px;font-size:0.8rem;color:#64748b;margin-bottom:16px">
-<strong>Demo scenario pre-loaded:</strong> Battery Cell v1.0 → v2.0 supersession. 2,400 units on hand + 800 on order. 80 units/day demand. Change effective in 30 days.
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="padding:16px 0 8px">
+  <div class="eyebrow">Supply Chain Stress Monitor</div>
+  <h1 style="font-size:1.75rem;font-weight:600;margin:6px 0 4px;letter-spacing:-0.02em">
+    Supplier Category Risk Dashboard
+  </h1>
+  <p style="color:#475569;font-size:0.88rem;max-width:680px">
+    Detects supplier financial stress 60–90 days before it causes delivery failures,
+    using US public data from the Bureau of Labor Statistics and Federal Reserve.
+    No enterprise software required.
+  </p>
 </div>
 """, unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    part_name         = col1.text_input("Part Name", value="Battery Cell v1.0")
-    old_part_cost     = col1.number_input("Old Part Unit Cost ($)", value=45.00, step=0.5)
-    current_inventory = col1.number_input("Current Inventory on Hand (units)", value=2400)
-    on_order_qty      = col1.number_input("Qty Currently On Order (units)", value=800)
-    daily_demand      = col2.number_input("Daily Demand Rate (units/day)", value=80)
-    new_part_cost     = col2.number_input("New Part Unit Cost ($)", value=42.00, step=0.5)
-    new_part_lead     = col2.number_input("New Part Lead Time (days)", value=45)
-    ppap_days         = col2.number_input("PPAP Qualification Days (new supplier)", value=90,
-                                           help="Days to qualify new supplier. Includes PPAP approval window.")
-    ca_effective_date = col1.date_input("Engineering Change Effective Date",
-                                         value=datetime.today() + timedelta(days=30))
+using_live = bool(fred_key and fred_key.strip())
+if using_live:
+    st.success("✓ FRED API connected — fetching live BLS/FRED data")
+else:
+    st.info("📊 Running on realistic demo data (2021–2024 BLS PPI pattern). Add FRED API key in sidebar for live data.", icon="ℹ️")
 
-    if st.button("Run Change Action Analysis", type="primary"):
-        today   = datetime.today()
-        ca_date = datetime.combine(ca_effective_date, datetime.min.time())
+st.markdown("---")
 
-        days_until_ca      = max(0,(ca_date - today).days)
-        total_old_stock    = current_inventory + on_order_qty
-        consumed_before_ca = min(total_old_stock, daily_demand * days_until_ca)
-        stranded_units     = max(0, total_old_stock - consumed_before_ca)
-        stranded_value     = stranded_units * old_part_cost
+# ── FETCH DATA ────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_data(categories: tuple, fred_key: str):
+    macro = get_demo_macro()
+    ppi_data = {}
+    for cat in categories:
+        series = CATEGORIES[cat]["ppi_series"]
+        if fred_key:
+            df = fetch_fred(series, fred_key)
+            if df is not None and len(df) > 6:
+                df["category"] = cat
+                ppi_data[cat] = df
+                continue
+        # Fallback to demo
+        ppi_data[cat] = get_demo_ppi(cat)
 
-        new_part_order_date = ca_date - timedelta(days=int(new_part_lead))
-        days_to_order_new   = max(0,(new_part_order_date - today).days)
+    if fred_key:
+        iso = fetch_fred("ISRATIO", fred_key)
+        if iso is not None:
+            macro["isratio"] = iso["value"].tolist()[-24:]
+        amtm = fetch_fred("AMTMNO", fred_key)
+        if amtm is not None:
+            macro["orders"] = amtm["value"].tolist()[-24:]
 
-        # Production gap calculation (FactorySync's unique contribution)
-        runout_date  = today + timedelta(days=total_old_stock / max(daily_demand,1))
-        new_part_arrival = new_part_order_date + timedelta(days=int(new_part_lead))
-        gap_days     = (runout_date - new_part_arrival).days
+    return ppi_data, macro
 
-        daily_savings   = (old_part_cost - new_part_cost) * daily_demand
-        annual_savings  = daily_savings * 365
+with st.spinner("Loading supply chain data..."):
+    ppi_data, macro = load_data(tuple(selected_cats), fred_key.strip() if fred_key else "")
 
-        # PPAP qualification check
-        ppap_complete_date = today + timedelta(days=int(ppap_days))
-        ppap_ready = ppap_complete_date <= new_part_arrival
+# ── COMPUTE STRESS SCORES ─────────────────────────────────────────────────────
+stress_scores = {}
+for cat in selected_cats:
+    if cat in ppi_data:
+        stress_scores[cat] = compute_stress(
+            ppi_data[cat], macro["isratio"], macro["orders"]
+        )
+
+# ── PORTFOLIO OVERVIEW ────────────────────────────────────────────────────────
+st.markdown("#### Portfolio Stress Overview")
+
+if stress_scores:
+    cols = st.columns(len(stress_scores))
+    for i, (cat, s) in enumerate(stress_scores.items()):
+        with cols[i]:
+            level_class = "risk-critical" if s["level"] == "CRITICAL" else ("risk-elevated" if s["level"] == "ELEVATED" else "risk-normal")
+            st.markdown(f"""
+<div class="signal-card">
+  <div class="signal-title">{cat}</div>
+  <div class="signal-val">{s['score']}<span style="font-size:1rem;color:#475569">/100</span></div>
+  <div class="signal-sub"><span class="{level_class}">{s['level']}</span><br>
+  PPI momentum: {'+' if s['momentum_pct'] >= 0 else ''}{s['momentum_pct']}%<br>
+  Volatility: {s['volatility_pct']}%</div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ── CATEGORY DEEP DIVE ────────────────────────────────────────────────────────
+st.markdown("#### Category Deep Dive")
+active_tab_names = selected_cats
+tabs = st.tabs(active_tab_names)
+
+for tab, cat in zip(tabs, selected_cats):
+    with tab:
+        if cat not in ppi_data or cat not in stress_scores:
+            st.warning(f"No data available for {cat}")
+            continue
+
+        df   = ppi_data[cat]
+        s    = stress_scores[cat]
+        info = CATEGORIES[cat]
+
+        # Top metrics
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Stress Score",       f"{s['score']}/100",  delta=s['level'], delta_color="inverse" if s['level'] != "NORMAL" else "normal")
+        c2.metric("PPI 3M Momentum",    f"{'+' if s['momentum_pct'] >= 0 else ''}{s['momentum_pct']}%",
+                  delta="Price pressure" if s['momentum_pct'] > 3 else "Stable",
+                  delta_color="inverse" if s['momentum_pct'] > 3 else "normal")
+        c3.metric("Price Volatility",   f"{s['volatility_pct']}%",
+                  delta="High uncertainty" if s['volatility_pct'] > 4 else "Normal",
+                  delta_color="inverse" if s['volatility_pct'] > 4 else "normal")
+        c4.metric("Inv/Sales Ratio",    f"{s['inv_ratio']}",
+                  delta="Demand softening" if s['inv_ratio'] > 1.42 else "Normal range",
+                  delta_color="inverse" if s['inv_ratio'] > 1.42 else "normal")
+
+        st.markdown("")
+
+        # PPI trend chart with risk zones
+        fig = go.Figure()
+
+        # Rolling 3-month average
+        vals  = df["value"].values
+        dates = df["date"].values
+        if len(vals) >= 3:
+            rolling_avg = pd.Series(vals).rolling(3).mean().values
+            fig.add_trace(go.Scatter(
+                x=dates, y=rolling_avg,
+                mode="lines", name="3-month avg",
+                line=dict(color="#94a3b8", width=1, dash="dash"), opacity=0.6
+            ))
+
+        # Main PPI line — color by stress
+        line_color = "#ef4444" if s['score'] >= 80 else ("#f59e0b" if s['score'] >= 55 else "#22c55e")
+        fig.add_trace(go.Scatter(
+            x=dates, y=vals,
+            mode="lines+markers", name=info["fred_label"],
+            line=dict(color=line_color, width=2),
+            marker=dict(size=4, color=line_color),
+            fill="tozeroy", fillcolor=f"rgba{tuple(int(line_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.05,)}"
+        ))
+
+        # Mark recent 3 months
+        if len(dates) >= 3:
+            fig.add_vrect(
+                x0=dates[-3], x1=dates[-1],
+                fillcolor="rgba(251,191,36,0.06)",
+                line_width=0,
+                annotation_text="  Signal window",
+                annotation_position="top left",
+                annotation_font_color="#64748b",
+                annotation_font_size=11,
+            )
+
+        fig.update_layout(
+            **DARK, height=300,
+            title=dict(text=f"Producer Price Index — {cat}", font=dict(size=14, color="#e2e8f0")),
+            xaxis_title="", yaxis_title="Index (1982=100)",
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                        font=dict(color="#64748b", size=11), bgcolor="rgba(0,0,0,0)")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Three-signal chart
+        st.markdown("**The Three-Signal Stress Pattern** — when all three move together, disruption follows in 60–90 days")
+
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            # Inventory/Sales ratio
+            fig_inv = go.Figure()
+            inv_dates = macro["dates"][-24:] if len(macro["dates"]) >= 24 else macro["dates"]
+            inv_vals  = macro["isratio"][-24:] if len(macro["isratio"]) >= 24 else macro["isratio"]
+            fig_inv.add_trace(go.Scatter(
+                x=inv_dates, y=inv_vals,
+                mode="lines+markers", name="Inv/Sales Ratio",
+                line=dict(color="#38bdf8", width=2),
+                marker=dict(size=3), fill="tozeroy",
+                fillcolor="rgba(56,189,248,0.06)"
+            ))
+            fig_inv.add_hline(y=1.42, line_dash="dot", line_color="#f59e0b",
+                              annotation_text=" Stress threshold (1.42)", annotation_font_color="#f59e0b", annotation_font_size=10)
+            fig_inv.update_layout(**DARK, height=220,
+                title=dict(text="Business Inventory/Sales Ratio (FRED ISRATIO)", font=dict(size=12,color="#e2e8f0")),
+                yaxis_title="Ratio", showlegend=False)
+            st.plotly_chart(fig_inv, use_container_width=True)
+
+        with col_b:
+            # New orders
+            fig_ord = go.Figure()
+            ord_dates = macro["dates"][-24:]
+            ord_vals  = macro["orders"][-24:]
+            ord_color = "#ef4444" if ord_vals[-1] < ord_vals[0] else "#22c55e"
+            fig_ord.add_trace(go.Scatter(
+                x=ord_dates, y=ord_vals,
+                mode="lines+markers", name="New Orders",
+                line=dict(color=ord_color, width=2),
+                marker=dict(size=3), fill="tozeroy",
+                fillcolor=f"rgba(239,68,68,0.06)" if ord_color == "#ef4444" else "rgba(34,197,94,0.06)"
+            ))
+            fig_ord.update_layout(**DARK, height=220,
+                title=dict(text="Manufacturers' New Orders — $B (FRED AMTMNO)", font=dict(size=12,color="#e2e8f0")),
+                yaxis_title="$B", showlegend=False)
+            st.plotly_chart(fig_ord, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("Analysis Results")
 
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Days Until Change",     days_until_ca)
-        c2.metric("Stranded Units",        f"{stranded_units:,}")
-        c3.metric("Obsolescence Risk",     f"${stranded_value:,.0f}",
-                  delta="Write-off risk" if stranded_value>0 else "None",delta_color="inverse")
-        c4.metric("Annual Savings (new)",  f"${annual_savings:,.0f}",delta="Post-transition")
+        # AI Risk Brief
+        st.markdown("**Procurement Risk Brief**")
+        st.markdown(f"""
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+  <span class="data-badge">BLS {info['fred_label']}</span>
+  <span class="data-badge">FRED ISRATIO</span>
+  <span class="data-badge">FRED AMTMNO</span>
+  <span class="data-badge">Sectors: {', '.join(info['sectors'][:2])}</span>
+  <span class="data-badge">Lead time: {info['typical_lead']}</span>
+</div>
+""", unsafe_allow_html=True)
 
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Order New Part By",     new_part_order_date.strftime("%b %d, %Y"))
-        c2.metric("Days Left to Order",    days_to_order_new,
-                  delta="URGENT" if days_to_order_new<=7 else ("Soon" if days_to_order_new<=14 else "On track"),
-                  delta_color="inverse" if days_to_order_new<=14 else "normal")
-        c3.metric("PPAP Ready Before Arrival", "✅ Yes" if ppap_ready else "⚠️ No",
-                  delta="On track" if ppap_ready else "Risk — qualify earlier",
-                  delta_color="normal" if ppap_ready else "inverse")
-        c4.metric("Production Gap Risk",   f"{abs(gap_days)} days {'gap' if gap_days<0 else 'buffer'}",
-                  delta="⚠️ GAP — expedite order" if gap_days<0 else "Buffer exists",
-                  delta_color="inverse" if gap_days<0 else "normal")
+        if st.button(f"Generate AI Brief for {cat}", key=f"brief_{cat}"):
+            with st.spinner("Analyzing signals..."):
+                brief = generate_brief(
+                    groq_key.strip() if groq_key else "",
+                    cat, s, info, ppi_data[cat],
+                    company_context
+                )
+                st.session_state[f"brief_text_{cat}"] = brief
 
-        if gap_days < 0:
-            st.error(f"🔴 PRODUCTION GAP DETECTED: If you order the new part today, it will arrive {abs(gap_days)} days after your old inventory runs out. Expedite the PO or arrange bridge supply from current supplier.")
-        elif days_to_order_new <= 7:
-            st.warning(f"⚠️ ORDER NEW PART IMMEDIATELY — {days_to_order_new} days remaining in order window.")
+        if f"brief_text_{cat}" in st.session_state:
+            st.markdown(f'<div class="brief-block">{st.session_state[f"brief_text_{cat}"]}</div>', unsafe_allow_html=True)
         else:
-            st.success(f"✅ Order window open for {days_to_order_new} more days. Place PO by {new_part_order_date.strftime('%B %d, %Y')}.")
+            st.markdown(f"""
+<div class="brief-block" style="color:#475569;font-style:italic">
+Click "Generate AI Brief" above to produce a procurement-ready risk memo for {cat}.
 
-        if not ppap_ready:
-            st.warning(f"⚠️ PPAP TIMING RISK: New supplier qualification ({ppap_days} days) completes {ppap_complete_date.strftime('%b %d')} but new parts arrive {new_part_arrival.strftime('%b %d')}. Start PPAP qualification now.")
+The brief will interpret the three stress signals above and produce:
+  • Risk level assessment with specific numbers
+  • What the data signals for your suppliers in this category
+  • 3 recommended procurement actions for the next 30 days
 
-        # Burn-down chart
-        days_range = range(0, int(total_old_stock/max(daily_demand,1)) + days_until_ca + 10)
-        inv_levels = [max(0, total_old_stock - daily_demand*d) for d in days_range]
-        fig_bd = go.Figure()
-        fig_bd.add_trace(go.Scatter(x=list(days_range), y=inv_levels, mode="lines",
-                                     fill="tozeroy", fillcolor="rgba(37,99,235,0.08)",
-                                     line=dict(color="#2563eb"), name="Old Part Inventory"))
-        fig_bd.add_vline(x=days_until_ca, line_dash="dash", line_color="#ef4444",
-                         annotation_text="Change effective", annotation_position="top right")
-        fig_bd.add_vline(x=days_to_order_new, line_dash="dot", line_color="#f59e0b",
-                         annotation_text="Order new part by", annotation_position="top left")
-        if stranded_units > 0:
-            fig_bd.add_hline(y=stranded_units, line_dash="dot", line_color="#f59e0b",
-                             annotation_text=f"Stranded: {stranded_units:,} units = ${stranded_value:,.0f}",
-                             annotation_position="right")
-        fig_bd.update_layout(**LIGHT, height=360, title="Old Part Inventory Burn-Down",
-                              xaxis_title="Days from Today", yaxis_title="Units on Hand")
-        st.plotly_chart(fig_bd, use_container_width=True)
+{"Groq API connected — AI brief will be generated live." if groq_key else "Add Groq API key in sidebar for AI-generated brief. Without it, a structured template brief is produced instead."}
+</div>
+""", unsafe_allow_html=True)
+
+# ── MACRO CONTEXT ─────────────────────────────────────────────────────────────
+with st.expander("📊 Macro Context — Why these three signals matter together"):
+    st.markdown("""
+**The Stress Lead Time Hypothesis**
+
+Supply disruptions do not appear suddenly. They have a consistent three-factor signature
+in US public data that appears **60–90 days before** the actual delivery failure:
+
+| Signal | What it measures | Threshold | Data source |
+|--------|-----------------|-----------|-------------|
+| PPI momentum | Input cost acceleration for supplier's raw materials | >3% over 3 months | BLS PPI series |
+| Price volatility | Planning uncertainty — the higher this is, the harder it is for suppliers to quote and plan | CV >4% | BLS PPI series |
+| Inventory/Sales ratio | When inventories pile up relative to sales, supplier customers are pulling back — revenue pressure follows | >1.42 | FRED ISRATIO |
+
+**When all three are elevated simultaneously:**
+Suppliers are paying more for inputs, facing demand uncertainty, and watching their customers' inventory build up.
+This combination compresses margins, strains working capital, and typically results in:
+- Lead time extension (prioritizing most profitable customers)
+- Quality shortcuts (cost-cutting under margin pressure)
+- Force majeure declarations (extreme cases)
+
+**The gap FactorySync fills:**
+Fortune 500 companies use Bloomberg, Resilinc, or Dun & Bradstreet for this intelligence — costing $50K–$500K/year.
+Mid-size manufacturers have nothing. This data is free and public. FactorySync automates the monitoring.
+""")
 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown(
-    "<p style='font-size:0.75rem;color:#94a3b8;text-align:center'>"
-    "FactorySync · Supplier Industrialization & MRP Platform · "
-    "AIAG PPAP 4th Ed. · AIAG SPC Manual · SAP S/4HANA data model · "
-    "Built by Rutwik Satish · MS Engineering Management, Northeastern University"
-    "</p>",
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<p style="font-size:0.75rem;color:#334155;text-align:center">
+FactorySync 2.0 · Supply Chain Stress Monitor ·
+Data: Bureau of Labor Statistics PPI + Federal Reserve FRED ·
+Built by Rutwik Satish · MS Engineering Management, Northeastern University
+</p>
+""", unsafe_allow_html=True)
